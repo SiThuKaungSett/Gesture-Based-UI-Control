@@ -1,0 +1,228 @@
+Project: GestureProject
+File: for_presentation.txt
+Purpose: Explanation of the current methods, functions, and gesture detection logic used in main.py.
+
+OVERVIEW
+--------
+GestureProject is a Python desktop control program. It uses a webcam to track one hand with MediaPipe, reads the detected hand landmarks with OpenCV, and sends mouse, keyboard, volume, and window-control commands with PyAutoGUI and Windows APIs.
+
+The project is organized around two main classes:
+
+1. CaptureThread
+   Opens the camera, detects hand landmarks, and sends the newest frame to the controller.
+
+2. GestureController
+   Reads landmarks, identifies the current gesture, moves the cursor, triggers actions, and displays the live preview window.
+
+
+1) CONFIGURATION CONSTANTS
+--------------------------
+The constants at the top of main.py control most behavior.
+
+Camera:
+- CAMERA_INDICES: camera indexes the app tries, starting with CAMERA_INDEX.
+- CAMERA_BACKENDS: OpenCV camera backends tried on Windows, such as DirectShow and Media Foundation.
+- MAX_FAILED_READS: number of failed camera reads allowed before the app reports a camera problem.
+
+Tracking:
+- MIN_DETECTION_CONFIDENCE and MIN_TRACKING_CONFIDENCE: MediaPipe confidence settings.
+- THUMB_HYSTERESIS: number of frames the thumb must be detected before it counts as stable.
+
+Cursor:
+- EMA_ALPHA: smoothing strength for cursor movement.
+- ACTIVE_BOX_MARGIN: inner camera area used for cursor mapping.
+- MIRROR_CURSOR_X: mirrors horizontal cursor movement to match the preview.
+
+Gesture thresholds:
+- THUMB_EXT_THRESHOLD: decides when the thumb is extended.
+- PINCH_CLICK_THRESHOLD: distance threshold for left and right click pinches.
+- GRAB_THRESHOLD: distance threshold for drag mode.
+- SCROLL_SENSITIVITY: vertical movement needed for scrolling.
+- ZOOM_DEPTH_THRESHOLD: hand-size change needed for zoom.
+- WINDOW_MOVE_THRESHOLD: vertical movement needed for minimize/maximize.
+- VOLUME_MOVE_THRESHOLD: vertical movement needed for volume changes.
+- DOUBLE_CLICK_HOLD_SECONDS: how long the thumb-only pose must be held.
+
+Cooldowns:
+- CLICK_COOLDOWN, DOUBLE_CLICK_COOLDOWN, ZOOM_COOLDOWN, VOLUME_COOLDOWN, WINDOW_COOLDOWN, and SCROLL_COOLDOWN prevent one gesture from firing too many times due to hand jitter.
+
+
+2) HELPER DATA STRUCTURES
+-------------------------
+FramePacket:
+- Stores one frame, its detected landmarks, and an optional error message.
+- This makes camera-to-controller communication clearer than passing raw dictionaries.
+
+FingerState:
+- Stores which fingers are up and the normalized thumb-to-index and thumb-to-middle distances.
+- This keeps the gesture rules readable.
+
+
+3) HELPER FUNCTIONS
+-------------------
+distance(a, b):
+- Computes Euclidean distance between two landmark points.
+- Used for palm size, pinch distance, and gesture thresholds.
+
+clamp(value, low, high):
+- Restricts a value to a safe range.
+- Used when mapping camera coordinates to screen coordinates.
+
+open_camera():
+- Tries several camera indexes and Windows camera backends.
+- Returns the first camera that opens and produces a valid frame.
+- Prints which camera index/backend worked.
+
+put_latest(out_queue, packet):
+- Keeps only the newest camera frame in the queue.
+- This prevents delay if the camera is producing frames faster than the controller can process them.
+
+
+4) CAPTURE THREAD
+-----------------
+CaptureThread runs separately from the gesture controller.
+
+Why a thread is used:
+- Camera reading and MediaPipe processing happen continuously.
+- The main controller can focus on gestures and UI actions without building a frame backlog.
+
+Important methods:
+
+__init__:
+- Creates the MediaPipe Hands model.
+- Stores the output queue and stop event.
+
+run:
+- Opens the camera using open_camera().
+- Reads frames from the camera.
+- Sends a friendly error packet if the camera cannot open or stops sending frames.
+- Calls detect_landmarks() for each valid frame.
+- Releases the camera and closes MediaPipe when done.
+
+detect_landmarks(frame):
+- Converts OpenCV BGR frames to RGB for MediaPipe.
+- Runs MediaPipe hand detection.
+- Converts normalized landmark coordinates to real frame pixel coordinates using the actual frame width and height.
+- Returns a list of 21 landmark points, or an empty list if no hand is detected.
+
+
+5) GESTURE CONTROLLER
+---------------------
+GestureController contains the main application logic.
+
+Important state:
+- ema_x and ema_y smooth the cursor movement.
+- last_action stores cooldown timestamps.
+- is_dragging remembers whether mouseDown is active.
+- prev_vol_y, prev_win_y, prev_scroll_y, and prev_palm_size store previous gesture positions.
+- thumb_up_counter stabilizes thumb detection.
+- current_gesture is shown in the preview overlay.
+
+process:
+- Waits for FramePacket objects from the capture thread.
+- Stops cleanly if an error packet is received.
+- Sends normal frames to handle_frame().
+
+handle_frame:
+- Handles one camera frame.
+- If no hand is found, it releases dragging state and shows "No hand".
+- If a hand is found, it computes palm size, finger states, moves the cursor, runs gesture detection, draws landmarks, and updates the preview.
+
+get_finger_state:
+- Detects index, middle, ring, and pinky as up when the fingertip y-coordinate is above the finger joint.
+- Detects the thumb using both vertical position and distance from the wrist.
+- Applies thumb hysteresis to reduce flicker.
+- Returns a FingerState object.
+
+move_cursor:
+- Uses the index fingertip as the cursor target.
+- Smooths movement with exponential moving average.
+- Maps the camera active area to the full screen.
+- Uses PyAutoGUI to move the mouse.
+
+run_gesture:
+- Checks gesture poses in priority order.
+- Calls the correct handler for scroll/zoom, double click, window control, drag, volume, left click, or right click.
+- Resets temporary movement state when no special gesture is active.
+
+
+6) GESTURE RULES
+----------------
+The order matters because the first matching rule triggers.
+
+Scroll and Zoom:
+- Pose: thumb + index + middle up, ring and pinky down.
+- Zoom is detected first by comparing current palm size to previous palm size.
+- Scroll is detected by vertical hand movement.
+
+Double Click:
+- Pose: thumb only.
+- The pose must be held for DOUBLE_CLICK_HOLD_SECONDS before a double click fires.
+
+Window Control:
+- Pose: thumb + pinky only.
+- Moving the hand up restores or maximizes the active window.
+- Moving the hand down minimizes the active window.
+- Windows API calls are made with ctypes.
+
+Drag:
+- Pose: thumb close to index and thumb close to middle.
+- Starts mouseDown when the gesture begins.
+- Releases mouseUp when the gesture ends.
+
+Volume:
+- Pose: thumb + index only.
+- Moving the wrist upward increases volume.
+- Moving the wrist downward decreases volume.
+
+Left Click:
+- Pose: thumb and index pinch.
+- Fires a normal click after the click cooldown.
+
+Right Click:
+- Pose: thumb and middle pinch.
+- Fires a right click after the click cooldown.
+
+
+7) DISPLAY FEEDBACK
+-------------------
+The OpenCV preview window shows:
+- The live camera frame, mirrored for natural viewing.
+- Green dots for detected hand landmarks.
+- A small overlay showing the current gesture name.
+
+Press Esc in the preview window to exit.
+
+
+8) LIBRARIES USED
+-----------------
+OpenCV:
+- Opens the camera.
+- Reads frames.
+- Converts BGR to RGB.
+- Draws landmarks and overlay text.
+- Shows the preview window.
+
+MediaPipe:
+- Detects hand landmarks.
+- Provides 21 normalized landmark points for one hand.
+
+PyAutoGUI:
+- Moves the mouse.
+- Clicks, double-clicks, drags, scrolls, and sends keyboard shortcuts.
+- Sends volume up/down keys.
+
+ctypes:
+- Calls Windows user32 APIs for active-window minimize, restore, and maximize.
+
+
+9) FUTURE IMPROVEMENT IDEAS
+---------------------------
+- Add a calibration mode for different camera positions.
+- Add a settings file so thresholds can be changed without editing code.
+- Add a pause/resume gesture.
+- Draw finger names or connection lines in the preview for debugging.
+- Add a small sound or color change when a click/drag/volume action fires.
+- Split the project into multiple files if it grows beyond one main script.
+
+END

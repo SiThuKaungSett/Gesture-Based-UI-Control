@@ -1,0 +1,1 @@
+Webcam-based hand gesture control for Windows using Python, MediaPipe, OpenCV, and PyAutoGUI.
