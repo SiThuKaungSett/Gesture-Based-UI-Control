@@ -27,6 +27,9 @@ env/
 *.log
 logs/
 
+# Local presentation notes
+for_presentation.txt
+
 # OS files
 .DS_Store
 Thumbs.db
